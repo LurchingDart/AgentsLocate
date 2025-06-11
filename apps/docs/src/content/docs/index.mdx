@@ -1,0 +1,44 @@
+---
+title: Docs
+description: Agents Locate Documentation
+template: splash
+hero:
+  title: |
+    Navigate Code with
+    <span
+      class="font-black text-transparent
+        bg-clip-text bg-gradient-to-b
+        from-accent-700 to-accent-400
+        dark:from-accent-500 dark:to-accent-200"
+    >
+      Natural Language
+    </span>
+  tagline: Conversational AI for software repository exploration
+  image:
+    file: ../../assets/houston.webp
+  actions:
+    - text: Get Started
+      link: /start/introduction/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/LurchingDart/AgentsLocate
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+	<Card title="Semantic Code Repository Indexing" icon="puzzle">
+		Automated repository parsing with ChromaDB vector database. Creates searchable semantic representations enabling concept location.
+	</Card>
+	<Card title="Multi-Level Code Summarization" icon="list-format">
+		Hierarchical analysis at file and method levels using AST parsing. Generates contextual summaries for precise codebase navigation.
+	</Card>
+	<Card title="Natural Language Repository Querying" icon="magnifier">
+		LangGraph-powered agent translates natural language into targeted code retrieval. Combines semantic search with metadata filtering.
+	</Card>
+	<Card title="Intelligent File Disambiguation" icon="approve-check-circle">
+		Smart clarification system when multiple files match user queries. Provides contextual options and guided selection for precise code location.
+	</Card>
+</CardGrid>
