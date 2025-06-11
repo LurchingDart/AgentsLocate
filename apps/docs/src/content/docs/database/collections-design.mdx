@@ -2,7 +2,656 @@
 title: Collections Design
 description: Docs Template
 ---
+# ChromaDB Collections Design for Concept Location Research
 
-:::caution[WIP]
-This is a work in progress. Please expect changes and improvements.
-:::
+## Introduction
+
+This document defines the ChromaDB collection architecture for the AI-powered concept location research project. The design supports single-repository concept location workflows, where users work with one repository at a time, enabling focused and efficient code search within specific codebases.
+
+## Collection Architecture Overview
+
+### One Collection Per Repository Strategy
+
+The architecture employs a **repository-specific collection approach** where each repository gets its own dedicated ChromaDB collection. This design supports:
+
+- **Focused concept location** - search within the current working repository
+- **Clean data isolation** - no cross-repository data confusion
+- **Simplified querying** - no need for repository filtering in queries
+- **Scalable management** - each repository collection can be managed independently
+
+### Collection Naming Strategy: Hash-Based Approach
+
+The architecture uses a **hash-based collection naming** strategy to ensure reliability and ChromaDB compliance:
+
+```python
+import hashlib
+from urllib.parse import urlparse
+
+def create_collection_name(repository_url: str) -> str:
+    """
+    Create ChromaDB-compliant collection name using URL hash
+    Format: repo-{first_8_chars_of_sha256_hash}
+    
+    Benefits:
+    - Always valid (3-63 chars, lowercase, alphanumeric)
+    - No URL cleaning required for any GitHub repository
+    - Collision-resistant (1 in 4 billion probability)
+    - Consistent naming across sessions
+    """
+    url_hash = hashlib.sha256(repository_url.encode()).hexdigest()
+    return f"repo-{url_hash[:8]}"
+
+# Examples:
+# https://github.com/facebook/react -> repo-a1b2c3d4
+# https://github.com/microsoft/vscode -> repo-e5f6g7h8
+# https://github.com/My-User_123/My.Weird-Repo -> repo-x9y8z7w6
+```
+
+**Advantages over manual naming:**
+- **No character cleaning** required for any GitHub URL format
+- **ChromaDB compliant** by design (meets all naming restrictions)
+- **Collision resistant** using SHA-256 hash (extremely low probability of conflicts)
+- **Consistent results** - same URL always produces same collection name
+- **Handles edge cases** automatically (special characters, long names, mixed case)
+
+### Application Flow
+
+```
+User Workflow:
+1. User provides GitHub repository URL
+2. System generates hash-based collection name: repo-{hash}
+3. System creates collection with repository metadata stored
+4. System ingests repository files into dedicated collection
+5. User searches within that specific repository collection
+6. When switching repositories, app queries different collection by hash
+```
+
+## Collection Schema Design
+
+### Document Structure
+
+Each collection contains documents representing individual source code files with enhanced metadata for IDE-like functionality:
+
+```json
+{
+  "id": "file_relative_path_hash",
+  "content": "AI-generated summary of file functionality",
+  "metadata": {
+    // File Identification  
+    "file_path": "/src/components/auth/LoginComponent.jsx",
+    "file_name": "LoginComponent.jsx",
+    "relative_path": "src/components/auth/LoginComponent.jsx",
+    "file_hash": "sha256_hash_of_content",
+    
+    // File Characteristics
+    "file_type": "javascript",
+    "programming_language": "jsx",
+    "file_size_bytes": 2048,
+    "line_count": 85,
+    "file_extension": ".jsx",
+    
+    // Content Analysis (AI-Generated)
+    "ai_summary": "React component for user authentication with login form, validation, and error handling",
+    "ai_functionality_description": "Handles user login process including form validation, API authentication, error display, and redirect after successful login",
+    "ai_keywords": ["authentication", "login", "form", "validation", "user"],
+    
+    // IDE-Style Symbol Information (for quick reference)
+    "function_names": ["handleLogin", "validateCredentials", "showError"],
+    "class_names": ["LoginComponent"],
+    "import_modules": ["React", "useState", "axios", "Router"],
+    "export_names": ["LoginComponent"],
+    "variable_names": ["loginState", "errorMessage", "isLoading"],
+    
+    // Dependencies and Relationships
+    "imports": ["React", "useState", "axios", "Router"],
+    "exports": ["LoginComponent"],
+    "dependencies": ["react", "axios", "react-router"],
+    "internal_dependencies": ["../utils/authUtils", "./ErrorMessage"],
+    
+    // Code Metrics
+    "complexity_score": 3.2,
+    "function_count": 3,
+    "class_count": 1,
+    "test_coverage": 85.5,
+    
+    // Git Metadata
+    "last_modified": "2025-06-01T10:30:00Z",
+    "author_email": "developer@example.com",
+    "author_name": "John Developer",
+    "commit_hash": "abc123def456",
+    "creation_date": "2025-05-15T09:00:00Z",
+    
+    // Research Metadata
+    "ingestion_timestamp": "2025-06-10T15:30:00Z",
+    "processing_version": "v1.0",
+    "summary_model": "gpt-3.5-turbo",
+    "schema_version": "1.0",
+    
+    // Search Strategy Flags
+    "searchable_content": true,
+    "has_summary": true,
+    "processing_status": "completed",
+    "indexing_method": "ai_summary"
+  }
+}
+```
+
+### Enhanced Metadata Schema Benefits
+
+The enhanced metadata schema supports multiple research and development needs:
+
+**IDE-Like Functionality:**
+- **Symbol Search**: Quick lookup using `function_names`, `class_names`, `variable_names`
+- **Dependency Tracking**: Internal and external dependency mapping
+- **Go-to Definition**: File path and symbol information for navigation
+
+**Research Analysis:**
+- **Code Metrics**: Complexity scores, coverage data, and quality indicators
+- **Content Analysis**: AI-generated summaries and keyword extraction
+- **Version Control**: Git metadata for temporal analysis
+
+**Search Optimization:**
+- **Multi-level Keywords**: AI keywords, code keywords, and symbol names
+- **Hierarchical Filtering**: File type, language, and complexity filtering
+- **Performance Flags**: Processing status and indexing method tracking
+
+## Repository Collection Management
+
+### Collection Creation Process
+
+```python
+import chromadb
+import hashlib
+from datetime import datetime
+from urllib.parse import urlparse
+
+def create_repository_collection(repository_url: str):
+    """
+    Create a new collection for a specific repository using hash-based naming
+    """
+    # Generate hash-based collection name
+    collection_name = create_collection_name(repository_url)
+    
+    # Parse repository URL for metadata
+    parsed = urlparse(repository_url)
+    path_parts = parsed.path.strip('/').split('/')
+    owner = path_parts[0] if len(path_parts) > 0 else "unknown"
+    repo_name = path_parts[1] if len(path_parts) > 1 else "unknown"
+    
+    # Initialize ChromaDB client
+    client = chromadb.PersistentClient(path="./chroma_research_db")
+    
+    # Create repository-specific collection
+    collection = client.create_collection(
+        name=collection_name,
+        metadata={
+            "repository_url": repository_url,
+            "repository_owner": owner,
+            "repository_name": repo_name,
+            "collection_type": "code_repository",
+            "created_at": datetime.now().isoformat(),
+            "chroma_version": "1.0.12",
+            "schema_version": "1.0",
+            "hnsw:space": "cosine",  # Optimal for code similarity
+            "description": f"Code files for {owner}/{repo_name} concept location research"
+        }
+    )
+    
+    return collection, collection_name
+
+def create_collection_name(repository_url: str) -> str:
+    """Generate hash-based collection name from repository URL"""
+    url_hash = hashlib.sha256(repository_url.encode()).hexdigest()
+    return f"repo-{url_hash[:8]}"
+```
+
+### Active Repository Management
+
+```python
+class RepositoryManager:
+    def __init__(self):
+        self.client = chromadb.PersistentClient(path="./chroma_research_db")
+        self.current_collection = None
+        self.current_repository = None
+        self.current_collection_name = None
+    
+    def set_active_repository(self, repository_url: str):
+        """Switch to working with a specific repository"""
+        collection_name = create_collection_name(repository_url)
+        
+        try:
+            self.current_collection = self.client.get_collection(collection_name)
+            self.current_repository = repository_url
+            self.current_collection_name = collection_name
+            return True
+        except Exception:
+            # Collection doesn't exist, needs to be created and ingested
+            return False
+    
+    def get_collection_info(self) -> dict:
+        """Get information about the currently active collection"""
+        if not self.current_collection:
+            return {"error": "No active repository set"}
+        
+        metadata = self.current_collection.metadata
+        count = self.current_collection.count()
+        
+        return {
+            "collection_name": self.current_collection_name,
+            "repository_url": metadata.get("repository_url"),
+            "repository_owner": metadata.get("repository_owner"),
+            "repository_name": metadata.get("repository_name"),
+            "document_count": count,
+            "created_at": metadata.get("created_at"),
+            "schema_version": metadata.get("schema_version")
+        }
+    
+    def search_current_repository(self, query: str, search_type: str = "semantic"):
+        """Search within the currently active repository"""
+        if not self.current_collection:
+            raise Exception("No active repository set")
+        
+        if search_type == "semantic":
+            return self.current_collection.query(
+                query_texts=[query],
+                n_results=10
+            )
+        elif search_type == "keyword":
+            return self.current_collection.query(
+                where={"ai_summary": {"$contains": query}},
+                n_results=10
+            )
+        else:
+            raise ValueError(f"Unsupported search type: {search_type}")
+```
+
+## Content Storage Strategy
+
+### AI Summary-Based Content Storage with Automatic Embeddings
+
+ChromaDB automatically handles embeddings for all content using the built-in `all-MiniLM-L6-v2` model, eliminating the need for external embedding services. The `content` field stores **AI-generated functional summaries** that serve both keyword search and automatic semantic search:
+
+**Automatic Embedding Benefits:**
+- **No External APIs**: ChromaDB's built-in embeddings run locally without API costs
+- **Dual Search Ready**: Content immediately available for both keyword and semantic search
+- **Research Simplicity**: No embedding model management or consistency concerns
+- **Local Processing**: All embedding generation happens locally for privacy and reliability
+
+**AI Summary Content Strategy:**
+
+The `content` field stores functional summaries rather than raw source code for optimal concept location results:
+
+- **Semantic Focus**: Summaries highlight functionality and purpose rather than syntax details
+- **Search Efficiency**: More concise and searchable than raw code for concept location
+- **Research Quality**: AI summaries provide consistent conceptual descriptions across coding styles
+- **Automatic Embeddings**: ChromaDB automatically generates embeddings from these summaries
+
+**Summary Generation Guidelines:**
+
+```
+Summary Structure Template:
+1. Primary Purpose (1-2 sentences)
+2. Key Functionality (2-3 bullet points)  
+3. Main Components/Methods (if applicable)
+4. Dependencies/Integrations (if applicable)
+
+Example Summary:
+"React authentication component that handles user login workflows. 
+Provides form validation, API integration with backend auth service, 
+error state management, and successful login redirection. 
+Main methods: handleLogin(), validateForm(), displayError(). 
+Integrates with AuthAPI service and Router for navigation."
+```
+
+**ChromaDB Processing:**
+
+When you add this summary to ChromaDB, it automatically:
+1. Stores the text content for keyword/metadata search
+2. Generates embeddings using `all-MiniLM-L6-v2` locally
+3. Indexes both for immediate dual search capabilities
+
+
+
+## Query Patterns for Single Repository Concept Location
+
+### Keyword-Based Search Strategies
+
+**1. Functional Concept Search**
+```python
+# "Where is user authentication handled?"
+collection.query(
+    where={
+        "$or": [
+            {"ai_summary": {"$contains": "authentication"}},
+            {"ai_keywords": {"$contains": "auth"}},
+            {"function_names": {"$contains": "auth"}}
+        ]
+    },
+    n_results=10
+)
+```
+
+**2. Symbol-Based Search**
+```python
+# "Find the login function"
+collection.query(
+    where={
+        "$or": [
+            {"function_names": {"$contains": "login"}},
+            {"class_names": {"$contains": "Login"}},
+            {"ai_keywords": {"$contains": "login"}}
+        ]
+    },
+    n_results=5
+)
+```
+
+**3. File Type and Language Filtering**
+```python
+# "Find all React components handling validation"
+collection.query(
+    where={
+        "$and": [
+            {"programming_language": "jsx"},
+            {
+                "$or": [
+                    {"ai_summary": {"$contains": "validation"}},
+                    {"function_names": {"$contains": "validate"}}
+                ]
+            }
+        ]
+    },
+    n_results=15
+)
+```
+
+### Semantic Search with Automatic Embeddings
+
+**1. Conceptual Similarity Search**
+```python
+# "Find code related to user authentication"
+collection.query(
+    query_texts=["user authentication and login systems"],
+    n_results=10
+)
+```
+
+**2. Functional Intent Search**
+```python
+# "Show me components that handle user input validation"
+collection.query(
+    query_texts=["form validation and user input checking"],
+    n_results=15
+)
+```
+
+**3. Combined Semantic and Metadata Search**
+```python
+# "Find React components handling authentication"
+collection.query(
+    query_texts=["authentication and user login"],
+    where={"programming_language": "jsx"},
+    n_results=10
+)
+```
+
+### Advanced Query Patterns
+
+**1. Dependency-Based Search**
+```python
+# "What files use the AuthAPI service?"
+collection.query(
+    where={
+        "$or": [
+            {"import_modules": {"$contains": "AuthAPI"}},
+            {"dependencies": {"$contains": "auth-api"}},
+            {"ai_summary": {"$contains": "AuthAPI"}}
+        ]
+    },
+    n_results=20
+)
+```
+
+**2. Complexity-Based Filtering**
+```python
+# "Find simple utility functions"
+collection.query(
+    query_texts=["utility helper functions"],
+    where={
+        "$and": [
+            {"complexity_score": {"$lt": 2.0}},
+            {"function_count": {"$gte": 1}}
+        ]
+    },
+    n_results=10
+)
+```
+
+## Research Experimental Framework
+
+### Automatic Dual Search Capability
+
+ChromaDB's automatic embedding generation enables immediate comparison between search approaches:
+
+```python
+def concept_location_comparison(collection, user_query: str, search_terms: str):
+    """
+    Compare keyword vs semantic search for concept location research
+    """
+    # Keyword-based search
+    keyword_results = collection.query(
+        where={"ai_summary": {"$contains": search_terms}},
+        n_results=20
+    )
+    
+    # Semantic search (automatic embeddings)
+    semantic_results = collection.query(
+        query_texts=[user_query],
+        n_results=20
+    )
+    
+    # Advanced metadata search
+    metadata_results = collection.query(
+        where={
+            "$or": [
+                {"function_names": {"$contains": search_terms}},
+                {"class_names": {"$contains": search_terms}},
+                {"ai_keywords": {"$contains": search_terms}}
+            ]
+        },
+        n_results=20
+    )
+    
+    return {
+        "keyword_results": keyword_results,
+        "semantic_results": semantic_results,
+        "metadata_results": metadata_results,
+        "methodology": "ChromaDB multi-approach concept location comparison"
+    }
+
+# Research usage example
+comparison = concept_location_comparison(
+    collection=current_collection,
+    user_query="Where is user authentication implemented?",
+    search_terms="authentication"
+)
+```
+
+### Research-Ready Search Interface
+
+```python
+class ConceptLocationInterface:
+    def __init__(self):
+        self.repo_manager = RepositoryManager()
+    
+    def search_concepts(self, user_query: str, search_type: str = "semantic", filters: dict = None):
+        """
+        Flexible concept location search with multiple strategies
+        """
+        if not self.repo_manager.current_collection:
+            return {"error": "Please connect to a repository first"}
+        
+        collection = self.repo_manager.current_collection
+        
+        if search_type == "semantic":
+            # Semantic search using automatic embeddings
+            results = collection.query(
+                query_texts=[user_query],
+                where=filters,
+                n_results=15
+            )
+        elif search_type == "keyword":
+            # Traditional keyword search
+            results = collection.query(
+                where={"ai_summary": {"$contains": user_query}},
+                n_results=15
+            )
+        elif search_type == "symbol":
+            # Symbol-based search for functions/classes
+            results = collection.query(
+                where={
+                    "$or": [
+                        {"function_names": {"$contains": user_query}},
+                        {"class_names": {"$contains": user_query}},
+                        {"variable_names": {"$contains": user_query}}
+                    ]
+                },
+                n_results=15
+            )
+        elif search_type == "hybrid":
+            # Research comparison of multiple approaches
+            return self._hybrid_search(user_query, filters)
+        else:
+            raise ValueError(f"Unsupported search type: {search_type}")
+        
+        return self._format_search_results(results)
+    
+    def _hybrid_search(self, user_query: str, filters: dict = None):
+        """Combine multiple search strategies for research comparison"""
+        collection = self.repo_manager.current_collection
+        
+        semantic_results = collection.query(
+            query_texts=[user_query],
+            where=filters,
+            n_results=10
+        )
+        
+        keyword_results = collection.query(
+            where={"ai_summary": {"$contains": user_query}},
+            n_results=10
+        )
+        
+        symbol_results = collection.query(
+            where={
+                "$or": [
+                    {"function_names": {"$contains": user_query}},
+                    {"class_names": {"$contains": user_query}}
+                ]
+            },
+            n_results=10
+        )
+        
+        return {
+            "semantic": self._format_search_results(semantic_results),
+            "keyword": self._format_search_results(keyword_results),
+            "symbol": self._format_search_results(symbol_results),
+            "comparison_ready": True
+        }
+    
+    def _format_search_results(self, results):
+        """Format search results for concept location analysis"""
+        formatted = []
+        for i, document in enumerate(results.get('documents', [])):
+            metadata = results.get('metadatas', [{}])[i]
+            distance = results.get('distances', [0])[i] if results.get('distances') else 0
+            
+            formatted.append({
+                "file_path": metadata.get("file_path"),
+                "file_name": metadata.get("file_name"),
+                "summary": document,
+                "functions": metadata.get("function_names", []),
+                "classes": metadata.get("class_names", []),
+                "programming_language": metadata.get("programming_language"),
+                "relevance_score": 1 - distance,  # Convert distance to similarity
+                "metadata": {
+                    "complexity": metadata.get("complexity_score"),
+                    "line_count": metadata.get("line_count"),
+                    "last_modified": metadata.get("last_modified")
+                }
+            })
+        return formatted
+```
+
+## Collection Management and Maintenance
+
+### Repository Collection Lifecycle
+
+**Creation**: New collection created when user first connects to a repository using hash-based naming
+**Usage**: Active collection queried for all concept location searches within that repository
+**Updates**: Incremental updates when repository changes are detected (handled by indexing approach)
+**Cleanup**: Optional removal of unused repository collections based on research needs
+
+### Multi-Repository Collection Management
+
+**Collection Isolation:**
+- Each repository collection operates independently
+- No cross-collection query overhead during single-repository research
+- Clean data boundaries for experimental comparison
+
+**Repository Switching:**
+- Hash-based lookup enables reliable repository identification
+- Collection metadata tracks repository information for user reference
+- Collection state preserved between research sessions
+
+**Research Data Organization:**
+- Collection metadata includes research versioning and timestamps
+- Schema versioning supports methodology evolution across experiments
+- Processing metadata enables reproducible research validation
+
+## Research Benefits and Advantages
+
+### ChromaDB Automatic Embedding Advantages
+
+**Immediate Dual Search Capability**: ChromaDB's automatic embedding generation using `all-MiniLM-L6-v2` enables immediate comparison between keyword and semantic search approaches without additional setup or API costs.
+
+**Research Flexibility**: Switch between search methodologies for experimental comparison:
+- **Phase 1**: Keyword-based concept location using metadata and summaries
+- **Phase 2**: Semantic concept location using automatic embeddings  
+- **Phase 3**: Symbol-based search using function/class names
+- **Phase 4**: Hybrid approaches combining multiple methods
+- **Phase 5**: Comparative analysis of search effectiveness
+
+**Cost-Free Experimentation**: Local embedding generation eliminates API costs and dependencies, enabling extensive research experimentation within academic budget constraints.
+
+**Simplified Development**: Hash-based naming eliminates URL cleaning complexity while automatic embeddings remove model management overhead, accelerating research timeline and reducing technical barriers.
+
+### Concept Location Research Advantages
+
+**Focused Repository Boundaries**: Single repository collections provide clear experimental boundaries while maintaining research flexibility for cross-repository comparison studies.
+
+**Rich Metadata Framework**: Comprehensive metadata schema supports diverse concept location research questions including symbol search, dependency analysis, and code complexity studies.
+
+**IDE-Like Functionality**: Enhanced metadata enables research into developer-friendly concept location approaches that mirror familiar IDE experiences.
+
+**Automatic Research Infrastructure**: ChromaDB's built-in capabilities provide immediate research infrastructure for concept location studies without complex setup or configuration.
+
+### Hash-Based Naming Benefits
+
+**Universal Compatibility**: Hash-based collection names handle any GitHub repository URL without cleaning or validation, ensuring robust operation across diverse repository naming conventions.
+
+**Research Reproducibility**: Consistent hash generation ensures same repository always maps to same collection, supporting reproducible experiments and peer review validation.
+
+**Collision Resistance**: SHA-256 hash provides extremely low collision probability (1 in 4 billion for 8-character prefix), ensuring unique collections for research integrity.
+
+**Operational Simplicity**: Eliminates complex URL parsing, character filtering, and edge case handling, reducing implementation complexity and potential failure points.
+
+## Conclusion
+
+This collections design leverages ChromaDB's automatic embedding capabilities and hash-based naming to provide optimal support for concept location research:
+
+- **Technical Simplicity**: Hash-based naming eliminates URL complexity while automatic embeddings provide sophisticated search capabilities without external dependencies
+- **Research Flexibility**: Immediate multi-modal search capabilities (semantic, keyword, symbol) support comprehensive experimental design and comparative analysis
+- **Academic Efficiency**: Cost-free local processing and simplified implementation accelerate research timeline while maintaining technical sophistication
+- **Experimental Reproducibility**: Consistent naming and automated processing support research validation and peer review requirements
+
+The combination of repository-specific collections, hash-based naming, and ChromaDB's automatic embedding generation creates an ideal foundation for investigating AI-powered concept location through multi-agent systems, enabling focus on core research questions while maintaining the technical sophistication necessary for meaningful academic contributions.
